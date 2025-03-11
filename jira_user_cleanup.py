@@ -1,5 +1,5 @@
 from jira import JIRA
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 from typing import List
@@ -12,18 +12,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class JiraUserManager:
-    def __init__(self, jira_url: str, email: str, api_token: str):
+    def __init__(self, jira_url: str, access_token: str):
         """
-        Initialize Jira connection
+        Initialize Jira connection using Personal Access Token
         
         Args:
             jira_url: Your Jira instance URL
-            email: Your Jira email
-            api_token: Your Jira API token
+            access_token: Your Jira Personal Access Token
         """
         self.jira = JIRA(
             server=jira_url,
-            basic_auth=(email, api_token)
+            token_auth=access_token  # Using PAT authentication
         )
         
     def get_all_active_users(self) -> List[dict]:
@@ -64,15 +63,16 @@ class JiraUserManager:
 
     def cleanup_inactive_users(self, days_threshold: int = 60):
         """
-        Find and deactivate users who haven't logged in for the specified number of days.
+        Find users who haven't logged in for the specified number of days.
+        Currently only lists users without deactivating them.
         
         Args:
-            days_threshold: Number of days of inactivity before deactivation
+            days_threshold: Number of days of inactivity before listing
         """
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_threshold)
         active_users = self.get_all_active_users()
         
-        deactivated_count = 0
+        inactive_users = []
         for user in active_users:
             last_login = self.get_user_last_login(user.name)
             
@@ -81,25 +81,35 @@ class JiraUserManager:
                 continue
                 
             if last_login < cutoff_date:
-                logger.info(f"User {user.name} last logged in on {last_login}, deactivating...")
-                if self.deactivate_user(user.name):
-                    deactivated_count += 1
-                    
-        logger.info(f"Deactivation complete. {deactivated_count} users were deactivated.")
+                logger.info(f"Inactive user found - Username: {user.name}, Last login: {last_login}")
+                inactive_users.append({
+                    'username': user.name,
+                    'last_login': last_login,
+                    'days_inactive': (datetime.now(timezone.utc) - last_login).days
+                })
+        
+        # Print summary
+        logger.info(f"\nInactive Users Summary:")
+        logger.info(f"Total active users checked: {len(active_users)}")
+        logger.info(f"Total inactive users found: {len(inactive_users)}")
+        
+        if inactive_users:
+            logger.info("\nDetailed list of inactive users:")
+            for user in sorted(inactive_users, key=lambda x: x['days_inactive'], reverse=True):
+                logger.info(f"Username: {user['username']:<30} Last login: {user['last_login']} ({user['days_inactive']} days ago)")
 
 def main():
     # Get Jira credentials from environment variables
     jira_url = os.getenv('JIRA_URL')
-    jira_email = os.getenv('JIRA_EMAIL')
-    jira_api_token = os.getenv('JIRA_API_TOKEN')
+    jira_pat = os.getenv('JIRA_PAT')  # Personal Access Token
     
-    if not all([jira_url, jira_email, jira_api_token]):
-        logger.error("Missing required environment variables. Please set JIRA_URL, JIRA_EMAIL, and JIRA_API_TOKEN")
+    if not all([jira_url, jira_pat]):
+        logger.error("Missing required environment variables. Please set JIRA_URL and JIRA_PAT")
         return
     
     try:
-        # Initialize the Jira user manager
-        jira_manager = JiraUserManager(jira_url, jira_email, jira_api_token)
+        # Initialize the Jira user manager with PAT
+        jira_manager = JiraUserManager(jira_url, jira_pat)
         
         # Run the cleanup process
         jira_manager.cleanup_inactive_users()
